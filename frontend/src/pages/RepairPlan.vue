@@ -10,6 +10,7 @@ import { useHallStore } from '@/stores/hallStore'
 import { useRepairStore } from '@/stores/repairStore'
 import type { RepairGroup } from '@/types/repair'
 import { REPAIR_STATES, REPAIR_STEP_NAMES, type RepairState, type RepairStep, type RepairStepName } from '@/types/repair'
+import { describeRepairConclusion, summarizeSteps, type RepairConclusionInfo } from '@/utils/repairConclusion'
 import { formatArea } from '@/utils/severity'
 
 const hallStore = useHallStore()
@@ -121,6 +122,12 @@ function groupSubtitle(group: RepairGroup): string {
   return `${level} · 病害 ${decay.type} · ${formatArea(decay.areaCm2)}`
 }
 
+/** 该组的修复结论展示（状态 + 依据 + 缺口）：人工结论优先，全部完成仅「待复核」 */
+function conclusionOf(group: RepairGroup): RepairConclusionInfo | null {
+  if (!group.decay) return null
+  return describeRepairConclusion(group.decay, summarizeSteps(group.steps))
+}
+
 function openStepDialog(decayId: string, step?: RepairStep): void {
   stepForm.decayId = decayId
   if (step) {
@@ -184,11 +191,16 @@ async function removeGroup(group: RepairGroup): Promise<void> {
 
 async function changeState(step: RepairStep, state: RepairState): Promise<void> {
   await repairStore.setStepState(step.id, state)
-  const group = repairStore.groupOf(step.decayId)
-  if (state === '已完成' && group && group.doneCount === group.totalCount) {
-    ElMessage.success('该病害全部工序完成，病害已回写为「已修复」')
-  } else {
+  const siblings = repairStore.steps.filter((item) => item.decayId === step.decayId && item.id !== step.id)
+  const allDone = state === '已完成' && siblings.every((item) => item.state === '已完成')
+  if (!allDone) {
     ElMessage.success(`工序状态已改为「${state}」`)
+    return
+  }
+  if (repairStore.decayById(step.decayId)?.repairSource === 'manual') {
+    ElMessage.success('全部工序已完成；人工结论优先，档案结论保持不变')
+  } else {
+    ElMessage.success('全部工序已完成，病害进入「待复核」，待档案台人工确认')
   }
 }
 
@@ -298,6 +310,8 @@ const stateOptions = REPAIR_STATES
       />
     </div>
 
+    <p class="muted percent-note">完成率口径：已完成工序 / 全部工序，未完成的工序仍计入分母；全部完成仅进入「待复核」，不覆盖人工结论。</p>
+
     <div class="section-card toolbar">
       <span class="toolbar__label">殿宇</span>
       <el-select v-model="hallFilter" clearable placeholder="全部殿宇" class="toolbar__select">
@@ -332,19 +346,26 @@ const stateOptions = REPAIR_STATES
         <span class="muted">这些病害尚无任何修复工序</span>
       </div>
       <div class="pending__list">
-        <el-tag
+        <el-tooltip
           v-for="decay in pendingDecays"
           :key="decay.id"
-          closable
-          :disable-transitions="true"
-          type="warning"
-          effect="plain"
-          @close="openStepDialog(decay.id)"
+          content="依据：无工序记录 ｜ 缺口：尚未编排修复工序"
+          placement="top"
         >
-          {{ decay.type }} / {{ decay.severity }} / {{ formatArea(decay.areaCm2) }}
-        </el-tag>
+          <el-tag
+            closable
+            :disable-transitions="true"
+            type="warning"
+            effect="plain"
+            @close="openStepDialog(decay.id)"
+          >
+            {{ decay.type }} / {{ decay.severity }} / {{ formatArea(decay.areaCm2) }}
+          </el-tag>
+        </el-tooltip>
       </div>
-      <p class="muted pending__hint">点击标签右侧「×」即可为该病害新增第一道工序。</p>
+      <p class="muted pending__hint">
+        依据：无工序记录；缺口：尚未编排修复工序。点击标签右侧「×」即可为该病害新增第一道工序，未完成的工序仍计入完成率分母。
+      </p>
     </div>
 
     <div v-if="groups.length > 0" class="timeline">
@@ -359,8 +380,19 @@ const stateOptions = REPAIR_STATES
           <div>
             <h3>{{ groupTitle(group) }}</h3>
             <p class="muted">{{ groupSubtitle(group) }}</p>
+            <p v-if="conclusionOf(group)" class="muted conclusion-line">
+              依据：{{ conclusionOf(group)?.basis }} ｜ 缺口：{{ conclusionOf(group)?.gap }}
+            </p>
           </div>
           <div class="timeline__head-right">
+            <el-tag
+              v-if="conclusionOf(group)"
+              :type="conclusionOf(group)?.tagType ?? 'info'"
+              effect="plain"
+              round
+            >
+              {{ conclusionOf(group)?.state }}
+            </el-tag>
             <SeverityTag v-if="group.decay" :severity="group.decay.severity" size="small" plain />
             <el-tag :type="group.percent === 100 ? 'success' : 'info'" effect="plain" round>
               {{ group.doneCount }}/{{ group.totalCount }}（{{ group.percent }}%）
@@ -518,6 +550,16 @@ const stateOptions = REPAIR_STATES
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+.percent-note {
+  margin: 8px 0 12px;
+  font-size: 12px;
+}
+
+.conclusion-line {
+  margin: 4px 0 0;
+  font-size: 12px;
 }
 
 .toolbar__label {

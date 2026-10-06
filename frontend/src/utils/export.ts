@@ -6,6 +6,22 @@ import {
   stampBackupTime,
   type BackupPayload
 } from '@/utils/db'
+import type { Decay } from '@/types/decay'
+import type { RepairStep } from '@/types/repair'
+import { summarizeSteps } from '@/utils/repairConclusion'
+
+/** 兼容旧版本备份：补齐 v3 新增字段，并按工序完成度回填待复核标记 */
+function normalizeDecayRecord(raw: Decay, steps: RepairStep[]): Decay {
+  const progress = summarizeSteps(steps)
+  return {
+    ...raw,
+    repaired: raw.repaired === true,
+    repairedAt: typeof raw.repairedAt === 'number' ? raw.repairedAt : null,
+    repairSource: raw.repairSource === 'manual' || raw.repairSource === 'steps' ? raw.repairSource : null,
+    manualConcludedAt: typeof raw.manualConcludedAt === 'number' ? raw.manualConcludedAt : null,
+    pendingReview: progress.total > 0 && progress.unfinishedNames.length === 0
+  }
+}
 
 /** 校验备份对象的必备字段，返回错误信息数组（为空表示通过） */
 export function validateBackup(input: unknown): { ok: boolean; errors: string[]; payload: BackupPayload | null } {
@@ -26,6 +42,13 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     if (!Array.isArray(obj[key])) errors.push(`${key} 字段缺失或不是数组`)
   }
   if (errors.length > 0) return { ok: false, errors, payload: null }
+  const repairSteps = obj.repairSteps ?? []
+  const stepsByDecay = new Map<string, RepairStep[]>()
+  repairSteps.forEach((step) => {
+    const list = stepsByDecay.get(step.decayId) ?? []
+    list.push(step)
+    stepsByDecay.set(step.decayId, list)
+  })
   const payload: BackupPayload = {
     app: 'gbmuralarch',
     dbVersion: typeof obj.dbVersion === 'number' ? obj.dbVersion : DB_VERSION,
@@ -33,8 +56,8 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     halls: obj.halls ?? [],
     elements: obj.elements ?? [],
     layers: obj.layers ?? [],
-    decays: obj.decays ?? [],
-    repairSteps: obj.repairSteps ?? []
+    decays: (obj.decays ?? []).map((decay) => normalizeDecayRecord(decay, stepsByDecay.get(decay.id) ?? [])),
+    repairSteps
   }
   return { ok: true, errors, payload }
 }
@@ -234,6 +257,9 @@ export async function seedDemoData(): Promise<void> {
           causeGuess: '地仗层脱胶，受檐口渗水影响',
           repaired: false,
           repairedAt: null,
+          repairSource: null,
+          manualConcludedAt: null,
+          pendingReview: false,
           createdAt: now,
           updatedAt: now
         },
@@ -246,6 +272,9 @@ export async function seedDemoData(): Promise<void> {
           causeGuess: '木构件干缩引起画面开裂',
           repaired: false,
           repairedAt: null,
+          repairSource: null,
+          manualConcludedAt: null,
+          pendingReview: false,
           createdAt: now,
           updatedAt: now
         }

@@ -13,6 +13,7 @@ import { useDecayStore } from '@/stores/decayStore'
 import { useRepairStore } from '@/stores/repairStore'
 import { DECAY_TYPES, type Decay, type DecayType, type Severity } from '@/types/decay'
 import { SEVERITIES } from '@/types/decay'
+import { describeRepairConclusion, type RepairConclusionInfo } from '@/utils/repairConclusion'
 import { formatArea, SEVERITY_COLOR } from '@/utils/severity'
 
 const router = useRouter()
@@ -121,9 +122,18 @@ function hallLabel(layerId: string): string {
   return hallStore.hallById(element.hallId)?.name ?? '殿宇已删除'
 }
 
-function repairProgress(decayId: string): { done: number; total: number } {
-  const steps = repairStore.steps.filter((step) => step.decayId === decayId)
-  return { done: steps.filter((step) => step.state === '已完成').length, total: steps.length }
+/** 每条病害的修复结论展示（状态 + 依据 + 缺口），人工结论优先 */
+const conclusionMap = computed<Map<string, RepairConclusionInfo>>(() => {
+  const map = new Map<string, RepairConclusionInfo>()
+  decayStore.decays.forEach((decay) => {
+    map.set(decay.id, describeRepairConclusion(decay, repairStore.progressOf(decay.id)))
+  })
+  return map
+})
+
+function conclusionOf(decayId: string): RepairConclusionInfo {
+  const info = conclusionMap.value.get(decayId)
+  return info ?? { state: '未修复', tagType: 'info', basis: '无工序记录，缺少人工结论', gap: '尚未编排修复工序' }
 }
 
 async function applyBatchSeverity(): Promise<void> {
@@ -181,8 +191,20 @@ async function removeRow(row: { decay: Decay }): Promise<void> {
 }
 
 async function toggleRepaired(row: { decay: Decay }): Promise<void> {
-  await decayStore.setRepaired(row.decay.id, !row.decay.repaired)
-  ElMessage.success(row.decay.repaired ? '已标记为未修复' : '已标记为已修复')
+  const next = !row.decay.repaired
+  await decayStore.setRepaired(row.decay.id, next)
+  ElMessage.success(next ? '已记录人工结论：已修复' : '已记录人工结论：未修复')
+}
+
+async function clearConclusion(row: { decay: Decay }): Promise<void> {
+  const confirmed = await ElMessageBox.confirm(
+    '清除人工结论后，将按全部工序是否完成重新判定该病害的修复状态，是否继续？',
+    '清除人工结论',
+    { type: 'warning' }
+  ).catch(() => false)
+  if (!confirmed) return
+  await decayStore.clearManualConclusion(row.decay.id)
+  ElMessage.success('已清除人工结论，并按工序完成度重新判定')
 }
 
 async function bulkMarkRepaired(repaired: boolean): Promise<void> {
@@ -194,7 +216,19 @@ async function bulkMarkRepaired(repaired: boolean): Promise<void> {
   for (const id of ids) {
     await decayStore.setRepaired(id, repaired)
   }
-  ElMessage.success(`已批量标记 ${ids.length} 条为${repaired ? '已修复' : '未修复'}`)
+  ElMessage.success(`已批量记录人工结论：${repaired ? '已修复' : '未修复'}（${ids.length} 条）`)
+}
+
+async function bulkClearConclusion(): Promise<void> {
+  const ids = Array.from(decayStore.selectedIds)
+  if (ids.length === 0) {
+    ElMessage.warning('请先勾选需要处理的病害记录')
+    return
+  }
+  for (const id of ids) {
+    await decayStore.clearManualConclusion(id)
+  }
+  ElMessage.success(`已清除 ${ids.length} 条人工结论，并按工序完成度重新判定`)
 }
 
 function goRepair(row: { decay: Decay }): void {
@@ -305,6 +339,8 @@ const severityPalette = SEVERITY_COLOR
 
       <el-button size="small" @click="bulkMarkRepaired(true)">标记已修复</el-button>
       <el-button size="small" @click="bulkMarkRepaired(false)">标记未修复</el-button>
+      <el-button size="small" @click="bulkClearConclusion">清除人工结论</el-button>
+      <span class="muted batch-bar__hint">人工结论优先；清除后按全部工序是否完成重新判定</span>
     </div>
 
     <div class="section-card">
@@ -341,23 +377,42 @@ const severityPalette = SEVERITY_COLOR
           <template #default="{ row }">{{ layerLabel(row.decay.layerId) }}</template>
         </el-table-column>
         <el-table-column label="成因初判" prop="decay.causeGuess" min-width="200" show-overflow-tooltip />
-        <el-table-column label="修复" width="150">
+        <el-table-column label="修复结论" width="250">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.decay.repaired ? 'success' : 'info'" effect="plain">
-              {{ row.decay.repaired ? '已修复' : '未修复' }}
-            </el-tag>
-            <span class="mono muted repair-progress">
-              {{ repairProgress(row.decay.id).done }}/{{ repairProgress(row.decay.id).total }}
-            </span>
+            <div class="conclusion">
+              <div class="conclusion__head">
+                <el-tag size="small" :type="conclusionOf(row.decay.id).tagType" effect="plain">
+                  {{ conclusionOf(row.decay.id).state }}
+                </el-tag>
+                <span class="mono muted">
+                  工序 {{ repairStore.progressOf(row.decay.id).done }}/{{ repairStore.progressOf(row.decay.id).total }}
+                </span>
+              </div>
+              <p class="conclusion__line" :title="`依据：${conclusionOf(row.decay.id).basis}`">
+                依据：{{ conclusionOf(row.decay.id).basis }}
+              </p>
+              <p class="conclusion__line" :title="`缺口：${conclusionOf(row.decay.id).gap}`">
+                缺口：{{ conclusionOf(row.decay.id).gap }}
+              </p>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text :icon="Edit" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" text :icon="Tools" @click="goRepair(row)">排工序</el-button>
             <el-button size="small" text type="primary" @click="goElements(row)">看层位</el-button>
             <el-button size="small" text @click="toggleRepaired(row)">
               {{ row.decay.repaired ? '撤销修复' : '标记修复' }}
+            </el-button>
+            <el-button
+              v-if="row.decay.repairSource === 'manual' || row.decay.repaired"
+              size="small"
+              text
+              type="warning"
+              @click="clearConclusion(row)"
+            >
+              清除结论
             </el-button>
             <el-button size="small" text type="danger" :icon="Delete" @click="removeRow(row)">删除</el-button>
           </template>
@@ -430,12 +485,33 @@ const severityPalette = SEVERITY_COLOR
   width: 140px;
 }
 
+.batch-bar__hint {
+  font-size: 12px;
+}
+
 .full-width {
   width: 100%;
 }
 
-.repair-progress {
-  margin-left: 6px;
+.conclusion {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+
+.conclusion__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.conclusion__line {
+  margin: 0;
   font-size: 12px;
+  color: #8c8479;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

@@ -6,7 +6,7 @@ import type { Decay } from '@/types/decay'
 import type { RepairStep } from '@/types/repair'
 
 /** 本地结构版本号：新增/修改表结构时必须递增，并补充 upgrade 迁移 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 /** 本地存储键名（localStorage 侧的少量元数据） */
 export const LS_KEYS = {
@@ -54,7 +54,7 @@ export class MuralArchDatabase extends Dexie {
       repairSteps: 'id, decayId, seq, state, updatedAt'
     })
     // v2：病害表补充 repairedAt 索引，工序表补充 name 索引
-    this.version(DB_VERSION)
+    this.version(2)
       .stores({
         halls: 'id, name, era, structureType, roofType, updatedAt',
         elements: 'id, hallId, position, status, updatedAt',
@@ -73,6 +73,40 @@ export class MuralArchDatabase extends Dexie {
             }
             if (typeof decay.repaired !== 'boolean') {
               decay.repaired = false
+            }
+          })
+      })
+    // v3：病害表补充修复结论来源（repairSource / manualConcludedAt）与待复核标记（pendingReview）
+    this.version(DB_VERSION)
+      .stores({
+        halls: 'id, name, era, structureType, roofType, updatedAt',
+        elements: 'id, hallId, position, status, updatedAt',
+        layers: 'id, elementId, level, patternName, pigment',
+        decays: 'id, layerId, type, severity, repaired, repairedAt, pendingReview, updatedAt',
+        repairSteps: 'id, decayId, seq, name, state, updatedAt'
+      })
+      .upgrade(async (tx) => {
+        // 迁移：历史数据缺少结论来源，repairSource 置 null（展示为「缺少人工结论」）；
+        // pendingReview 按现有工序完成度回填，升级后档案台与工序页可直接读取
+        const steps = await tx.table<RepairStep>('repairSteps').toArray()
+        const progressMap = new Map<string, { total: number; undone: number }>()
+        steps.forEach((step) => {
+          const bucket = progressMap.get(step.decayId) ?? { total: 0, undone: 0 }
+          bucket.total += 1
+          if (step.state !== '已完成') bucket.undone += 1
+          progressMap.set(step.decayId, bucket)
+        })
+        await tx
+          .table<Decay>('decays')
+          .toCollection()
+          .modify((decay) => {
+            const progress = progressMap.get(decay.id)
+            decay.pendingReview = progress !== undefined && progress.total > 0 && progress.undone === 0
+            if (decay.repairSource !== 'manual' && decay.repairSource !== 'steps') {
+              decay.repairSource = null
+            }
+            if (typeof decay.manualConcludedAt !== 'number') {
+              decay.manualConcludedAt = null
             }
           })
       })

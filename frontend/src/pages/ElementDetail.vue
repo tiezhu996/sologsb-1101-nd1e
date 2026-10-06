@@ -347,7 +347,10 @@ async function submitDecay(): Promise<void> {
     areaCm2: decayForm.areaCm2,
     causeGuess: decayForm.causeGuess.trim() || '待现场复核',
     repaired: false,
-    repairedAt: null
+    repairedAt: null,
+    repairSource: null,
+    manualConcludedAt: null,
+    pendingReview: false
   })
   expandedLayerIds.value = Array.from(new Set([...expandedLayerIds.value, decayForm.layerId]))
   decayDialogVisible.value = false

@@ -84,10 +84,12 @@ npm run preview    # 本地预览构建产物（http://localhost:21801）
 | Hall 殿宇 | `src/types/hall.ts` | `id` `name` `era` `structureType`（大木/小式） `roofType`（庑殿/歇山/悬山） | 新建后进入构件录入 |
 | Element 构件 | `src/types/element.ts` | `id` `hallId` `position`（檐下/室内/梁枋/斗拱/天花） `name` `layerCount` `baseLayer` `status`（完好/观察/待修） | 按殿宇与部位二维筛选 |
 | PaintLayer 彩画层位 | `src/types/layer.ts` | `id` `elementId` `level`（由外至内） `patternName`（旋子/和玺/苏式） `pigment`（石青/石绿/朱砂/土黄） `thicknessMm` | 层位顺次叠压 |
-| Decay 病害记录 | `src/types/decay.ts` | `id` `layerId` `type`（起甲/剥落/空鼓/粉化/龟裂） `severity`（轻度/中度/重度） `areaCm2` `causeGuess` `repaired` | 同层位可叠加多条并汇总到殿宇 |
+| Decay 病害记录 | `src/types/decay.ts` | `id` `layerId` `type`（起甲/剥落/空鼓/粉化/龟裂） `severity`（轻度/中度/重度） `areaCm2` `causeGuess` `repaired` `repairSource` `pendingReview` | 同层位可叠加多条并汇总到殿宇 |
 | RepairStep 修复工序 | `src/types/repair.ts` | `id` `decayId` `seq` `name`（除尘/回贴/灌浆/补绘/封护） `material` `operator` `state`（未开始/进行中/已完成） | 拖拽排序，完成回写病害 |
 
-数据结构版本号 `DB_VERSION` 定义在 `src/utils/db.ts`，当前为 `v2`：`decays` 表补充 `repairedAt` 索引，并为修复状态缺失的历史数据按 `updatedAt` 回填，升级逻辑写在 Dexie 的 `.upgrade()` 中。
+修复结论判定规则：**人工结论优先**——档案台的「标记修复 / 撤销修复」写入人工结论（`repairSource = 'manual'`），工序回写不得覆盖；工序全部完成只把病害置为「待复核」（`pendingReview`），不直接判已修复；在档案台「清除结论」后，才按全部工序是否完成重新判定。没有工序、只完成一部分、以及历史记录缺少人工结论时，档案台与工序时间线都会写明依据与缺口；完成率口径为已完成 / 全部工序，未完成工序仍计入分母。
+
+数据结构版本号 `DB_VERSION` 定义在 `src/utils/db.ts`，当前为 `v3`：`decays` 表补充 `repairSource` / `manualConcludedAt` / `pendingReview` 字段与 `pendingReview` 索引，历史记录结论来源置空（展示为「缺少人工结论」），待复核标记按现有工序完成度回填，升级逻辑写在 Dexie 的 `.upgrade()` 中；旧版本 JSON 备份导入时同样补齐这些字段。
 
 ---
 

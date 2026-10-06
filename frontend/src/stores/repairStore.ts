@@ -9,6 +9,7 @@ import type { Element } from '@/types/element'
 import type { Hall } from '@/types/hall'
 import type { PaintLayer } from '@/types/layer'
 import type { RepairGroup, RepairState, RepairStep, RepairStepName } from '@/types/repair'
+import { summarizeSteps, type StepProgress } from '@/utils/repairConclusion'
 
 /**
  * 工序 store：维护工序顺序与完成态，并负责把完成结果回写病害。
@@ -176,12 +177,14 @@ export const useRepairStore = defineStore('repair', () => {
     await syncDecayState(step.decayId)
   }
 
-  /** 完成即回写病害为已修复：同病害全部工序完成后置 repaired = true */
+  /** 工序变动后回写病害：人工结论优先，全部完成仅置「待复核」 */
   async function syncDecayState(decayId: string): Promise<void> {
-    const list = await db.repairSteps.where('decayId').equals(decayId).toArray()
-    if (list.length === 0) return
-    const allDone = list.every((step) => step.state === '已完成')
-    await decayStore.setRepaired(decayId, allDone)
+    await decayStore.syncFromSteps(decayId)
+  }
+
+  /** 某病害的工序进度（未完成工序计入完成率分母） */
+  function progressOf(decayId: string): StepProgress {
+    return summarizeSteps(steps.value.filter((step) => step.decayId === decayId))
   }
 
   async function normalizeSeq(decayId: string): Promise<void> {
@@ -243,6 +246,7 @@ export const useRepairStore = defineStore('repair', () => {
     groupOf,
     decayById,
     hallOfGroup,
+    progressOf,
     setSortMode,
     setActiveDecay,
     nextSeq,

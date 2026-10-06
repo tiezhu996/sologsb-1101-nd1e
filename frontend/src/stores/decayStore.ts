@@ -11,6 +11,7 @@ import {
 } from '@/types/decay'
 import type { Element } from '@/types/element'
 import type { PaintLayer } from '@/types/layer'
+import { deriveFromSteps, summarizeSteps } from '@/utils/repairConclusion'
 import { SEVERITY_WEIGHT } from '@/utils/severity'
 
 /** 病害档案台的一行：病害 + 所属层位 + 构件（含殿宇信息） */
@@ -212,10 +213,49 @@ export const useDecayStore = defineStore('decay', () => {
     return ids.length
   }
 
-  /** 标记 / 取消已修复，由修复工序完成态调用 */
+  /** 人工结论：档案台标记 / 撤销已修复，工序回写不得覆盖 */
   async function setRepaired(id: string, repaired: boolean): Promise<void> {
     const now = Date.now()
-    await decaysTable.update(id, { repaired, repairedAt: repaired ? now : null })
+    await decaysTable.update(id, {
+      repaired,
+      repairedAt: repaired ? now : null,
+      repairSource: 'manual',
+      manualConcludedAt: now
+    })
+  }
+
+  /** 清除人工结论，并按全部工序是否完成重新判定（全部完成 → 待复核） */
+  async function clearManualConclusion(id: string): Promise<void> {
+    const list = await db.repairSteps.where('decayId').equals(id).toArray()
+    const outcome = deriveFromSteps(summarizeSteps(list))
+    await decaysTable.update(id, {
+      repaired: outcome.repaired,
+      repairedAt: outcome.repairedAt,
+      repairSource: outcome.repairSource,
+      manualConcludedAt: null,
+      pendingReview: outcome.pendingReview
+    })
+  }
+
+  /**
+   * 工序侧回写：只维护待复核标记与工序判定的结论。
+   * 人工结论优先，不覆盖；历史已修复但缺少结论来源的记录同样不被改写。
+   */
+  async function syncFromSteps(id: string): Promise<void> {
+    const decay = await db.decays.get(id)
+    if (!decay) return
+    const list = await db.repairSteps.where('decayId').equals(id).toArray()
+    const outcome = deriveFromSteps(summarizeSteps(list))
+    const patch: Partial<Decay> = { pendingReview: outcome.pendingReview }
+    const locked = decay.repairSource === 'manual' || (decay.repaired && decay.repairSource === null)
+    if (!locked) {
+      patch.repaired = outcome.repaired
+      patch.repairedAt = outcome.repairedAt
+      patch.repairSource = outcome.repairSource
+    }
+    const changed = (Object.keys(patch) as Array<keyof Decay>).some((key) => decay[key] !== patch[key])
+    if (!changed) return
+    await decaysTable.update(id, patch)
   }
 
   return {
@@ -246,6 +286,8 @@ export const useDecayStore = defineStore('decay', () => {
     removeDecay,
     bulkSetSeverity,
     bulkSetType,
-    setRepaired
+    setRepaired,
+    clearManualConclusion,
+    syncFromSteps
   }
 })
