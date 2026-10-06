@@ -70,7 +70,7 @@ npm run preview    # 本地预览构建产物（http://localhost:21801）
 | `/halls` | 殿宇总览 | 新建殿宇、按年代与结构类型筛选，卡片回显病害总数与未修复数 | Hall、Element、PaintLayer、Decay |
 | `/halls/:id/elements` | 构件与层位 | 构件树 + 层位表格，新增构件与层位，挂接病害 | Element、PaintLayer、Decay |
 | `/decays` | 病害档案台 | 按类型 / 程度 / 颜料 / 殿宇 / 部位组合筛选，批量改严重程度与类型 | Decay、PaintLayer |
-| `/repair` | 修复工序时间线 | 拖拽调整工序先后，回填材料与责任人，完成即回写病害为已修复 | RepairStep、Decay |
+| `/repair` | 修复工序时间线 | 拖拽调整工序先后，回填材料与责任人；全部工序完成只到「待复核」，人工复核结论优先，工序调整不覆盖结论 | RepairStep、Decay |
 | `/backup` | 本地数据与备份 | 查看本地结构版本、JSON 导入导出、清空与样例数据 | 全部模型 |
 
 `/` 与未匹配路径均重定向到 `/halls`。
@@ -84,10 +84,20 @@ npm run preview    # 本地预览构建产物（http://localhost:21801）
 | Hall 殿宇 | `src/types/hall.ts` | `id` `name` `era` `structureType`（大木/小式） `roofType`（庑殿/歇山/悬山） | 新建后进入构件录入 |
 | Element 构件 | `src/types/element.ts` | `id` `hallId` `position`（檐下/室内/梁枋/斗拱/天花） `name` `layerCount` `baseLayer` `status`（完好/观察/待修） | 按殿宇与部位二维筛选 |
 | PaintLayer 彩画层位 | `src/types/layer.ts` | `id` `elementId` `level`（由外至内） `patternName`（旋子/和玺/苏式） `pigment`（石青/石绿/朱砂/土黄） `thicknessMm` | 层位顺次叠压 |
-| Decay 病害记录 | `src/types/decay.ts` | `id` `layerId` `type`（起甲/剥落/空鼓/粉化/龟裂） `severity`（轻度/中度/重度） `areaCm2` `causeGuess` `repaired` | 同层位可叠加多条并汇总到殿宇 |
-| RepairStep 修复工序 | `src/types/repair.ts` | `id` `decayId` `seq` `name`（除尘/回贴/灌浆/补绘/封护） `material` `operator` `state`（未开始/进行中/已完成） | 拖拽排序，完成回写病害 |
+| Decay 病害记录 | `src/types/decay.ts` | `id` `layerId` `type`（起甲/剥落/空鼓/粉化/龟裂） `severity`（轻度/中度/重度） `areaCm2` `causeGuess` `repaired`（生效修复态，仅随人工结论） `manualConclusion`（人工复核结论：true/false/null） `manualConclusionAt` `legacyRepaired`（旧版回写留档） | 同层位可叠加多条并汇总到殿宇 |
+| RepairStep 修复工序 | `src/types/repair.ts` | `id` `decayId` `seq` `name`（除尘/回贴/灌浆/补绘/封护） `material` `operator` `state`（未开始/进行中/已完成） | 拖拽排序；不再回写病害结论 |
 
-数据结构版本号 `DB_VERSION` 定义在 `src/utils/db.ts`，当前为 `v2`：`decays` 表补充 `repairedAt` 索引，并为修复状态缺失的历史数据按 `updatedAt` 回填，升级逻辑写在 Dexie 的 `.upgrade()` 中。
+### 修复状态判定（档案台与工序时间线一致）
+
+两处共用 `src/utils/decayStatus.ts` 的 `resolveDecayReview()`，避免互相覆盖：
+
+1. **人工结论优先**：`manualConclusion` 为 `true`（已修复）或 `false`（未修复）时，施工班组增删改工序、拖拽排序都不会改变结论；
+2. **工序全部完成只显示「待复核」**：无人工结论时，所有工序 `已完成` 只判定为待复核，需人工确认才计入已修复；
+3. **清除人工结论后重新判定**：结论置 `null` 后，按全部工序是否完成重新落到「待复核 / 未修复」；
+4. **无工序、部分完成**：均显示「未修复」，并在提示中写清依据与缺口（缺工序、未完成道数、待复核）；未完成工序仍计入完成率分母；
+5. **历史旧数据**：v2 及以前由「工序完工自动回写」产生的 `repaired=true`，升级到 v3 后不直接算作已修复，而是保留在 `legacyRepaired` 中留档，状态回到待人工复核，并在依据中注明旧版来源。
+
+数据结构版本号 `DB_VERSION` 定义在 `src/utils/db.ts`，当前为 `v3`：`decays` 表补充 `manualConclusion` / `manualConclusionAt` 索引，并在升级时为缺少人工结论字段的历史数据补齐（`manualConclusion=null`，旧回写标记转入 `legacyRepaired`）。v2 曾为 `decays` 补充 `repairedAt` 索引、为修复状态缺失数据按 `updatedAt` 回填。升级逻辑写在 Dexie 的 `.upgrade()` 中；导入旧版本备份时 `normalizeDecay()` 做同样的归一化，保证旧数据升级后仍可读。
 
 ---
 
@@ -103,7 +113,7 @@ sologsb-1101/
 │   │   ├── hooks/                # useDecayFilter.ts useIdbTable.ts
 │   │   ├── pages/                # HallList.vue ElementDetail.vue DecayBoard.vue RepairPlan.vue BackupView.vue
 │   │   ├── router/               # index.ts
-│   │   ├── utils/                # severity.ts db.ts export.ts
+│   │   ├── utils/                # severity.ts db.ts export.ts decayStatus.ts
 │   │   ├── styles/               # main.css
 │   │   ├── App.vue main.ts env.d.ts
 │   ├── public/favicon.svg

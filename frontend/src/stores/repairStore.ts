@@ -9,6 +9,7 @@ import type { Element } from '@/types/element'
 import type { Hall } from '@/types/hall'
 import type { PaintLayer } from '@/types/layer'
 import type { RepairGroup, RepairState, RepairStep, RepairStepName } from '@/types/repair'
+import { resolveDecayReview } from '@/utils/decayStatus'
 
 /**
  * 工序 store：维护工序顺序与完成态，并负责把完成结果回写病害。
@@ -55,7 +56,8 @@ export const useRepairStore = defineStore('repair', () => {
         steps: sorted,
         doneCount,
         totalCount: sorted.length,
-        percent: sorted.length === 0 ? 0 : Math.round((doneCount / sorted.length) * 100)
+        percent: sorted.length === 0 ? 0 : Math.round((doneCount / sorted.length) * 100),
+        review: decay ? resolveDecayReview(decay, sorted) : null
       })
     })
     return result.sort((a, b) => {
@@ -126,14 +128,11 @@ export const useRepairStore = defineStore('repair', () => {
       },
       'step'
     )
-    await syncDecayState(payload.decayId)
     return step
   }
 
   async function updateStep(id: string, patch: Partial<RepairStep>): Promise<void> {
     await repairTable.update(id, patch)
-    const step = steps.value.find((item) => item.id === id)
-    if (step) await syncDecayState(step.decayId)
   }
 
   async function removeStep(id: string): Promise<void> {
@@ -141,13 +140,11 @@ export const useRepairStore = defineStore('repair', () => {
     if (!step) return
     await repairTable.remove(id)
     await normalizeSeq(step.decayId)
-    await syncDecayState(step.decayId)
   }
 
   async function removeGroup(decayId: string): Promise<void> {
     const ids = steps.value.filter((step) => step.decayId === decayId).map((step) => step.id)
     await repairTable.bulkRemove(ids)
-    await syncDecayState(decayId)
   }
 
   /** 拖拽后按新顺序批量回写 seq */
@@ -172,16 +169,16 @@ export const useRepairStore = defineStore('repair', () => {
   async function setStepState(id: string, state: RepairState): Promise<void> {
     const step = steps.value.find((item) => item.id === id)
     if (!step) return
+    // 仅记录工序状态：不回写病害，全部完成只到「待复核」，更不覆盖人工结论
     await repairTable.update(id, { state })
-    await syncDecayState(step.decayId)
   }
 
-  /** 完成即回写病害为已修复：同病害全部工序完成后置 repaired = true */
-  async function syncDecayState(decayId: string): Promise<void> {
-    const list = await db.repairSteps.where('decayId').equals(decayId).toArray()
-    if (list.length === 0) return
-    const allDone = list.every((step) => step.state === '已完成')
-    await decayStore.setRepaired(decayId, allDone)
+  /**
+   * 人工复核结论的工序侧入口，与病害档案台走同一个 decayStore 写入口：
+   * 结论优先，工序调整永远不会覆盖；清除结论后由复核状态按工序重新判定。
+   */
+  async function setManualConclusion(decayId: string, conclusion: boolean | null): Promise<void> {
+    await decayStore.setManualConclusion(decayId, conclusion)
   }
 
   async function normalizeSeq(decayId: string): Promise<void> {
@@ -252,7 +249,7 @@ export const useRepairStore = defineStore('repair', () => {
     removeGroup,
     reorder,
     setStepState,
-    syncDecayState,
+    setManualConclusion,
     normalizeSeq,
     scaffoldForHall
   }

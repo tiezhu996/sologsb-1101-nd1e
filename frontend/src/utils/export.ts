@@ -6,6 +6,7 @@ import {
   stampBackupTime,
   type BackupPayload
 } from '@/utils/db'
+import { normalizeDecay } from '@/utils/decayStatus'
 
 /** 校验备份对象的必备字段，返回错误信息数组（为空表示通过） */
 export function validateBackup(input: unknown): { ok: boolean; errors: string[]; payload: BackupPayload | null } {
@@ -26,6 +27,10 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     if (!Array.isArray(obj[key])) errors.push(`${key} 字段缺失或不是数组`)
   }
   if (errors.length > 0) return { ok: false, errors, payload: null }
+  // 归一化病害记录：兼容 v1/v2 备份（缺人工结论字段），旧回写标记转入 legacyRepaired
+  const decays = (obj.decays ?? []).map((decay, index) =>
+    normalizeDecay({ ...decay, id: typeof decay.id === 'string' ? decay.id : `legacy_dec_${index}` })
+  )
   const payload: BackupPayload = {
     app: 'gbmuralarch',
     dbVersion: typeof obj.dbVersion === 'number' ? obj.dbVersion : DB_VERSION,
@@ -33,7 +38,7 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     halls: obj.halls ?? [],
     elements: obj.elements ?? [],
     layers: obj.layers ?? [],
-    decays: obj.decays ?? [],
+    decays,
     repairSteps: obj.repairSteps ?? []
   }
   return { ok: true, errors, payload }
@@ -234,6 +239,8 @@ export async function seedDemoData(): Promise<void> {
           causeGuess: '地仗层脱胶，受檐口渗水影响',
           repaired: false,
           repairedAt: null,
+          manualConclusion: null,
+          manualConclusionAt: null,
           createdAt: now,
           updatedAt: now
         },
@@ -246,6 +253,8 @@ export async function seedDemoData(): Promise<void> {
           causeGuess: '木构件干缩引起画面开裂',
           repaired: false,
           repairedAt: null,
+          manualConclusion: null,
+          manualConclusionAt: null,
           createdAt: now,
           updatedAt: now
         }

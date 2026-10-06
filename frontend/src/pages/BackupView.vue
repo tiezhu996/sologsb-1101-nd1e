@@ -56,7 +56,7 @@ const storageRows = computed(() => [
   { table: 'layers（彩画层位）', key: 'id, elementId, level, patternName, pigment', count: counts.value.layers },
   {
     table: 'decays（病害）',
-    key: 'id, layerId, type, severity, repaired, repairedAt, updatedAt',
+    key: 'id, layerId, type, severity, repaired, repairedAt, manualConclusion, manualConclusionAt, updatedAt',
     count: counts.value.decays
   },
   { table: 'repairSteps（工序）', key: 'id, decayId, seq, name, state, updatedAt', count: counts.value.repairSteps }
@@ -214,7 +214,9 @@ const previewKeys: Array<{ key: keyof Pick<BackupPayload, 'halls' | 'elements' |
         </el-table-column>
       </el-table>
       <p class="muted storage-note">
-        版本 1 → 2 的迁移：decays 表补充 repairedAt 索引，修复状态字段缺失的历史数据按 updatedAt 回填。
+        版本 1 → 2：decays 表补充 repairedAt 索引，修复状态缺失的历史数据按 updatedAt 回填。版本 2 →
+        3：decays 表补充人工复核结论（manualConclusion / manualConclusionAt）索引；旧版「工序完工即回写已修复」的
+        repaired 标记转入 legacyRepaired 仅留档，生效修复只认人工结论，工序全部完成只显示「待复核」。
       </p>
     </div>
 

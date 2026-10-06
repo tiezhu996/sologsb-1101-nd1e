@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
-import { Delete, Edit, Plus, Tools } from '@element-plus/icons-vue'
+import { Delete, Edit, Plus, Tools, ArrowDown, WarningFilled } from '@element-plus/icons-vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import FilterBar, { type FilterModel } from '@/components/common/FilterBar.vue'
 import SeverityTag from '@/components/common/SeverityTag.vue'
@@ -14,6 +14,7 @@ import { useRepairStore } from '@/stores/repairStore'
 import { DECAY_TYPES, type Decay, type DecayType, type Severity } from '@/types/decay'
 import { SEVERITIES } from '@/types/decay'
 import { formatArea, SEVERITY_COLOR } from '@/utils/severity'
+import { resolveDecayReview } from '@/utils/decayStatus'
 
 const router = useRouter()
 const hallStore = useHallStore()
@@ -121,9 +122,10 @@ function hallLabel(layerId: string): string {
   return hallStore.hallById(element.hallId)?.name ?? '殿宇已删除'
 }
 
-function repairProgress(decayId: string): { done: number; total: number } {
+function reviewOf(decayId: string) {
   const steps = repairStore.steps.filter((step) => step.decayId === decayId)
-  return { done: steps.filter((step) => step.state === '已完成').length, total: steps.length }
+  const decay = decayStore.decays.find((item) => item.id === decayId) ?? null
+  return decay ? resolveDecayReview(decay, steps) : null
 }
 
 async function applyBatchSeverity(): Promise<void> {
@@ -180,21 +182,32 @@ async function removeRow(row: { decay: Decay }): Promise<void> {
   ElMessage.success('病害记录已删除')
 }
 
-async function toggleRepaired(row: { decay: Decay }): Promise<void> {
-  await decayStore.setRepaired(row.decay.id, !row.decay.repaired)
-  ElMessage.success(row.decay.repaired ? '已标记为未修复' : '已标记为已修复')
+/** 单行人工结论：已修复 / 未修复 / 清除（清除后按工序重新判定） */
+async function applyConclusion(row: { decay: Decay }, conclusion: boolean | null): Promise<void> {
+  await decayStore.setManualConclusion(row.decay.id, conclusion)
+  if (conclusion === true) ElMessage.success('人工结论：已修复。工序调整不会再覆盖该结论')
+  else if (conclusion === false) ElMessage.success('人工结论：未修复。工序调整不会再覆盖该结论')
+  else ElMessage.success('已清除人工结论，改按工序完成度重新判定')
 }
 
-async function bulkMarkRepaired(repaired: boolean): Promise<void> {
+function handleConclusionCommand(row: { decay: Decay }, command: string): void {
+  if (command === 'repaired') void applyConclusion(row, true)
+  else if (command === 'unrepaired') void applyConclusion(row, false)
+  else void applyConclusion(row, null)
+}
+
+async function bulkSetConclusion(conclusion: boolean | null): Promise<void> {
   const ids = Array.from(decayStore.selectedIds)
   if (ids.length === 0) {
     ElMessage.warning('请先勾选需要处理的病害记录')
     return
   }
   for (const id of ids) {
-    await decayStore.setRepaired(id, repaired)
+    await decayStore.setManualConclusion(id, conclusion)
   }
-  ElMessage.success(`已批量标记 ${ids.length} 条为${repaired ? '已修复' : '未修复'}`)
+  if (conclusion === true) ElMessage.success(`已将 ${ids.length} 条病害人工判定为已修复`)
+  else if (conclusion === false) ElMessage.success(`已将 ${ids.length} 条病害人工判定为未修复`)
+  else ElMessage.success(`已清除 ${ids.length} 条病害的人工结论，改按工序重新判定`)
 }
 
 function goRepair(row: { decay: Decay }): void {
@@ -261,6 +274,7 @@ const severityPalette = SEVERITY_COLOR
         :percent="decayStore.rows.length ? Math.round((severityCounts.轻度 / decayStore.rows.length) * 100) : 0"
       />
       <StatBadge label="未修复" :value="decayStore.unrepairedCount" suffix="条" icon="Histogram" tone="info" />
+      <StatBadge label="待人工复核" :value="decayStore.pendingReviewCount" suffix="条" icon="View" tone="warning" />
       <StatBadge
         label="修复完成率"
         :value="decayStore.repairedPercent"
@@ -303,8 +317,9 @@ const severityPalette = SEVERITY_COLOR
       </el-select>
       <el-button type="primary" plain size="small" @click="applyBatchType">应用</el-button>
 
-      <el-button size="small" @click="bulkMarkRepaired(true)">标记已修复</el-button>
-      <el-button size="small" @click="bulkMarkRepaired(false)">标记未修复</el-button>
+      <el-button size="small" type="success" plain @click="bulkSetConclusion(true)">人工判定已修复</el-button>
+      <el-button size="small" type="danger" plain @click="bulkSetConclusion(false)">人工判定未修复</el-button>
+      <el-button size="small" @click="bulkSetConclusion(null)">清除人工结论</el-button>
     </div>
 
     <div class="section-card">
@@ -341,24 +356,42 @@ const severityPalette = SEVERITY_COLOR
           <template #default="{ row }">{{ layerLabel(row.decay.layerId) }}</template>
         </el-table-column>
         <el-table-column label="成因初判" prop="decay.causeGuess" min-width="200" show-overflow-tooltip />
-        <el-table-column label="修复" width="150">
+        <el-table-column label="复核状态" width="210">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.decay.repaired ? 'success' : 'info'" effect="plain">
-              {{ row.decay.repaired ? '已修复' : '未修复' }}
-            </el-tag>
-            <span class="mono muted repair-progress">
-              {{ repairProgress(row.decay.id).done }}/{{ repairProgress(row.decay.id).total }}
-            </span>
+              <el-tag size="small" :type="reviewOf(row.decay.id)?.tagType ?? 'info'" effect="plain">
+                {{ reviewOf(row.decay.id)?.label ?? '未修复' }}
+              </el-tag>
+              <span class="mono muted repair-progress">
+                工序 {{ reviewOf(row.decay.id)?.progress.done ?? 0 }}/{{ reviewOf(row.decay.id)?.progress.total ?? 0 }}
+              </span>
+              <el-tooltip placement="top" effect="light">
+                <template #content>
+                  <div class="review-tip">
+                    <div>依据：{{ reviewOf(row.decay.id)?.basis }}</div>
+                    <div>缺口：{{ reviewOf(row.decay.id)?.gap }}</div>
+                  </div>
+                </template>
+                <el-icon class="review-info-icon"><WarningFilled /></el-icon>
+              </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text :icon="Edit" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" text :icon="Tools" @click="goRepair(row)">排工序</el-button>
             <el-button size="small" text type="primary" @click="goElements(row)">看层位</el-button>
-            <el-button size="small" text @click="toggleRepaired(row)">
-              {{ row.decay.repaired ? '撤销修复' : '标记修复' }}
-            </el-button>
+            <el-dropdown trigger="click" @command="(cmd: string) => handleConclusionCommand(row, cmd)">
+              <el-button size="small" text type="warning">
+                人工结论<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="repaired">判定已修复</el-dropdown-item>
+                  <el-dropdown-item command="unrepaired">判定未修复</el-dropdown-item>
+                  <el-dropdown-item command="clear" divided>清除人工结论</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <el-button size="small" text type="danger" :icon="Delete" @click="removeRow(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -437,5 +470,24 @@ const severityPalette = SEVERITY_COLOR
 .repair-progress {
   margin-left: 6px;
   font-size: 12px;
+}
+
+.review-info-icon {
+  margin-left: 4px;
+  font-size: 14px;
+  color: #b09a76;
+  cursor: help;
+  vertical-align: -2px;
+}
+
+.review-tip {
+  max-width: 280px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.review-tip div + div {
+  margin-top: 4px;
+  color: #b06b00;
 }
 </style>

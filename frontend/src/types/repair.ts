@@ -29,4 +29,6 @@ export interface RepairGroup {
   doneCount: number
   totalCount: number
   percent: number
+  /** 病害复核状态（人工结论优先），decay 缺失时为 null */
+  review: import('@/utils/decayStatus').DecayReviewInfo | null
 }

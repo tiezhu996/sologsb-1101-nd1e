@@ -12,6 +12,7 @@ import { useDecayStore } from '@/stores/decayStore'
 import { ELEMENT_POSITIONS, ELEMENT_STATUSES, type Element, type ElementPosition, type ElementStatus } from '@/types/element'
 import { PATTERN_NAMES, PIGMENTS, type PaintLayer, type PatternName, type Pigment } from '@/types/layer'
 import { DECAY_TYPES, SEVERITIES, type Decay, type DecayType, type Severity } from '@/types/decay'
+import { resolveDecayReview } from '@/utils/decayStatus'
 
 const route = useRoute()
 const router = useRouter()
@@ -169,11 +170,16 @@ const selectedStats = computed(() => {
   })
   return {
     decayCount: decays.length,
-    unrepaired: decays.filter((decay) => !decay.repaired).length,
+    unrepaired: decays.filter((decay) => decay.manualConclusion !== true).length,
     area: decays.reduce((sum, decay) => sum + decay.areaCm2, 0),
     severity
   }
 })
+
+function reviewOf(decay: Decay) {
+  const steps = decayStore.repairSteps.filter((step) => step.decayId === decay.id)
+  return resolveDecayReview(decay, steps)
+}
 
 function layerDecays(layerId: string): Decay[] {
   return hallStore.decaysOfLayer(layerId)
@@ -345,9 +351,7 @@ async function submitDecay(): Promise<void> {
     type: decayForm.type,
     severity: decayForm.severity,
     areaCm2: decayForm.areaCm2,
-    causeGuess: decayForm.causeGuess.trim() || '待现场复核',
-    repaired: false,
-    repairedAt: null
+    causeGuess: decayForm.causeGuess.trim() || '待现场复核'
   })
   expandedLayerIds.value = Array.from(new Set([...expandedLayerIds.value, decayForm.layerId]))
   decayDialogVisible.value = false
@@ -540,10 +544,16 @@ const severityOptions = SEVERITIES
                           </template>
                         </el-table-column>
                         <el-table-column label="成因初判" prop="causeGuess" min-width="200" />
-                        <el-table-column label="修复状态" width="100">
+                        <el-table-column label="复核状态" width="160">
                           <template #default="{ row: decay }">
-                            <el-tag size="small" :type="decay.repaired ? 'success' : 'info'" effect="plain">
-                              {{ decay.repaired ? '已修复' : '未修复' }}
+                            <el-tooltip placement="top" effect="light">
+                              <template #content>
+                                <div>依据：{{ reviewOf(decay).basis }}</div>
+                                <div>缺口：{{ reviewOf(decay).gap }}</div>
+                              </template>
+                            </el-tooltip>
+                            <el-tag size="small" :type="reviewOf(decay).tagType" effect="plain">
+                              {{ reviewOf(decay).label }}
                             </el-tag>
                           </template>
                         </el-table-column>

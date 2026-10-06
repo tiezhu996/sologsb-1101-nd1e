@@ -67,7 +67,7 @@ export const useHallStore = defineStore('hall', () => {
       const hallElements = elements.value.filter((element) => element.hallId === hall.id)
       const elementIds = new Set(hallElements.map((element) => element.id))
       const layerCount = layers.value.filter((layer) => elementIds.has(layer.elementId)).length
-      const repaired = list.filter((decay) => decay.repaired).length
+      const repaired = list.filter((decay) => decay.manualConclusion === true).length
       return {
         hallId: hall.id,
         decayCount: list.length,
@@ -102,7 +102,7 @@ export const useHallStore = defineStore('hall', () => {
   )
 
   const totalDecay = computed(() => decays.value.length)
-  const totalUnrepaired = computed(() => decays.value.filter((decay) => !decay.repaired).length)
+  const totalUnrepaired = computed(() => decays.value.filter((decay) => decay.manualConclusion !== true).length)
   const totalArea = computed(() => decays.value.reduce((sum, decay) => sum + decay.areaCm2, 0))
 
   function setCurrentHall(id: string | null): void {

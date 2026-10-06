@@ -6,7 +6,7 @@ import type { Decay } from '@/types/decay'
 import type { RepairStep } from '@/types/repair'
 
 /** 本地结构版本号：新增/修改表结构时必须递增，并补充 upgrade 迁移 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 /** 本地存储键名（localStorage 侧的少量元数据） */
 export const LS_KEYS = {
@@ -54,7 +54,7 @@ export class MuralArchDatabase extends Dexie {
       repairSteps: 'id, decayId, seq, state, updatedAt'
     })
     // v2：病害表补充 repairedAt 索引，工序表补充 name 索引
-    this.version(DB_VERSION)
+    this.version(2)
       .stores({
         halls: 'id, name, era, structureType, roofType, updatedAt',
         elements: 'id, hallId, position, status, updatedAt',
@@ -74,6 +74,32 @@ export class MuralArchDatabase extends Dexie {
             if (typeof decay.repaired !== 'boolean') {
               decay.repaired = false
             }
+          })
+      })
+    // v3：病害表补充人工复核结论索引；结论优先于工序，工序完工只到「待复核」
+    this.version(DB_VERSION)
+      .stores({
+        halls: 'id, name, era, structureType, roofType, updatedAt',
+        elements: 'id, hallId, position, status, updatedAt',
+        layers: 'id, elementId, level, patternName, pigment',
+        decays:
+          'id, layerId, type, severity, repaired, repairedAt, manualConclusion, manualConclusionAt, updatedAt',
+        repairSteps: 'id, decayId, seq, name, state, updatedAt'
+      })
+      .upgrade(async (tx) => {
+        // 旧数据没有人工结论：一律标记为「无结论」，由工序完成度重新判定。
+        // 旧版回写产生的 repaired=true 保留到 legacyRepaired 作为旧依据，
+        // 生效 repaired 只认人工结论，避免老档案凭空显示已修复。
+        await tx
+          .table<Decay>('decays')
+          .toCollection()
+          .modify((decay) => {
+            const legacy = decay.repaired === true
+            decay.manualConclusion = null
+            decay.manualConclusionAt = null
+            if (legacy) decay.legacyRepaired = true
+            decay.repaired = false
+            decay.repairedAt = null
           })
       })
   }

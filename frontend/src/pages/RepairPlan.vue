@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Edit, MagicStick, Plus, Sort } from '@element-plus/icons-vue'
+import { Delete, Edit, MagicStick, Plus, Sort, ArrowDown } from '@element-plus/icons-vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import SeverityTag from '@/components/common/SeverityTag.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
@@ -185,11 +185,28 @@ async function removeGroup(group: RepairGroup): Promise<void> {
 async function changeState(step: RepairStep, state: RepairState): Promise<void> {
   await repairStore.setStepState(step.id, state)
   const group = repairStore.groupOf(step.decayId)
+  const hasManual = group?.decay?.manualConclusion !== null && group?.decay?.manualConclusion !== undefined
   if (state === '已完成' && group && group.doneCount === group.totalCount) {
-    ElMessage.success('该病害全部工序完成，病害已回写为「已修复」')
+    ElMessage.success(
+      hasManual ? '该病害全部工序完成，人工复核结论保持不变' : '该病害全部工序完成，状态置为「待复核」，需人工确认才会计入已修复'
+    )
   } else {
     ElMessage.success(`工序状态已改为「${state}」`)
   }
+}
+
+/** 时间线侧的人工复核结论，与档案台同一写入口 */
+async function applyGroupConclusion(group: RepairGroup, conclusion: boolean | null): Promise<void> {
+  await repairStore.setManualConclusion(group.decayId, conclusion)
+  if (conclusion === true) ElMessage.success('人工结论：已修复。后续工序调整不会覆盖该结论')
+  else if (conclusion === false) ElMessage.success('人工结论：未修复。后续工序调整不会覆盖该结论')
+  else ElMessage.success('已清除人工结论，改按工序完成度重新判定')
+}
+
+function handleGroupConclusion(group: RepairGroup, command: string): void {
+  if (command === 'repaired') void applyGroupConclusion(group, true)
+  else if (command === 'unrepaired') void applyGroupConclusion(group, false)
+  else void applyGroupConclusion(group, null)
 }
 
 function onDragStart(step: RepairStep): void {
@@ -344,7 +361,10 @@ const stateOptions = REPAIR_STATES
           {{ decay.type }} / {{ decay.severity }} / {{ formatArea(decay.areaCm2) }}
         </el-tag>
       </div>
-      <p class="muted pending__hint">点击标签右侧「×」即可为该病害新增第一道工序。</p>
+      <p class="muted pending__hint">
+        点击标签右侧「×」即可为该病害新增第一道工序。判定依据：无人工复核结论且未挂接任何工序，统一记为未修复，
+        缺口为「先安排工序、完工后再人工复核」。
+      </p>
     </div>
 
     <div v-if="groups.length > 0" class="timeline">
@@ -359,12 +379,29 @@ const stateOptions = REPAIR_STATES
           <div>
             <h3>{{ groupTitle(group) }}</h3>
             <p class="muted">{{ groupSubtitle(group) }}</p>
+            <p v-if="group.review" class="review-note">
+              <el-tag size="small" :type="group.review.tagType" effect="plain">{{ group.review.label }}</el-tag>
+              <span class="review-note__text">依据：{{ group.review.basis }}</span>
+            </p>
+            <p v-if="group.review" class="review-note review-note--gap">缺口：{{ group.review.gap }}</p>
           </div>
           <div class="timeline__head-right">
             <SeverityTag v-if="group.decay" :severity="group.decay.severity" size="small" plain />
             <el-tag :type="group.percent === 100 ? 'success' : 'info'" effect="plain" round>
               {{ group.doneCount }}/{{ group.totalCount }}（{{ group.percent }}%）
             </el-tag>
+            <el-dropdown trigger="click" @command="(cmd: string) => handleGroupConclusion(group, cmd)">
+              <el-button size="small" type="warning" plain>
+                人工结论<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="repaired">判定已修复</el-dropdown-item>
+                  <el-dropdown-item command="unrepaired">判定未修复</el-dropdown-item>
+                  <el-dropdown-item command="clear" divided>清除人工结论</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <el-button size="small" type="danger" text :icon="Delete" @click="removeGroup(group)">清空</el-button>
           </div>
         </header>
@@ -576,6 +613,23 @@ const stateOptions = REPAIR_STATES
 .timeline__head p {
   margin: 2px 0 0;
   font-size: 12px;
+}
+
+.review-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px !important;
+  font-size: 12px;
+  color: #4a4238;
+}
+
+.review-note--gap {
+  color: #b06b00;
+}
+
+.review-note__text {
+  line-height: 1.5;
 }
 
 .timeline__head-right {
